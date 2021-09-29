@@ -4,6 +4,7 @@ static struct tm_tween_api* tm_tween_api;
 static struct tm_graph_interpreter_api* tm_graph_interpreter_api;
 static struct tm_properties_view_api* tm_properties_view_api;
 static struct tm_the_truth_api* tm_the_truth_api;
+static struct tm_localizer_api *tm_localizer_api;
 
 #include "tween.h"
 
@@ -12,10 +13,13 @@ static struct tm_the_truth_api* tm_the_truth_api;
 #include <foundation/the_truth_types.h>
 #include <foundation/macros.h>
 #include <foundation/log.h>
+#include <foundation/localizer.h>
+#include <foundation/temp_allocator.h>
 
 #include <plugins/entity/entity.h>
 #include <plugins/editor_views/properties.h>
 #include <plugins/editor_views/graph.h>
+#include <plugins/graph_interpreter/graph_component.h>
 #include <plugins/graph_interpreter/graph_component_node_type.h>
 #include <plugins/graph_interpreter/graph_interpreter.h>
 
@@ -138,15 +142,11 @@ static void tween_create_f(tm_graph_interpreter_context_t *ctx)
     if (name_w.n == 0)
         return;
 
-    tm_logger_api->printf(TM_LOG_TYPE_ERROR, "easing_w.n = %d\n", easing_w.n);
-
     const char *name = (const char *)name_w.data;
     const float from = from_w.n > 0 ? *(float *)from_w.data : 0;
     const float to = to_w.n > 0 ? *(float *)to_w.data : 0;
     const float duration = duration_w.n > 0 ? *(float *)duration_w.data : 1;
     const uint32_t easing = easing_w.n > 0 ? *(uint32_t *)easing_w.data : 0;
-
-    tm_logger_api->printf(TM_LOG_TYPE_ERROR, "easing = %d\n", easing);
 
     tm_tween_api->create(name, from, to, duration, easingFunctions[easing]);
 }
@@ -155,7 +155,7 @@ static tm_graph_component_node_type_i tween_create_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_create",
     .display_name = "tm_tween_create",
-    .category = TM_LOCALIZE("Tween"),
+    .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
         { "name", TM_TT_TYPE_HASH__STRING },
@@ -203,7 +203,7 @@ static tm_graph_component_node_type_i tween_is_running_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_is_running",
     .display_name = "tm_tween_is_running",
-    .category = TM_LOCALIZE("Tween"),
+    .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "name", TM_TT_TYPE_HASH__STRING },
     },
@@ -247,7 +247,7 @@ static tm_graph_component_node_type_i tween_get_float_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_get_float",
     .display_name = "tm_tween_get_float",
-    .category = TM_LOCALIZE("Tween"),
+    .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "name", TM_TT_TYPE_HASH__STRING },
     },
@@ -356,6 +356,22 @@ static void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_aspect(tt, easing_type, TM_TT_ASPECT__PROPERTIES, easing_type_properties_aspect);
 }
 
+static bool compile_data_to_wire(tm_graph_interpreter_o *gr, uint32_t wire, const tm_the_truth_o *tt, tm_tt_id_t data_id, tm_strhash_t to_type_hash)
+{
+    const tm_tt_type_t type = tm_tt_type(data_id);
+    const tm_strhash_t type_hash = tm_the_truth_api->type_name_hash(tt, type);
+    const tm_the_truth_object_o *data_r = tm_tt_read(tt, data_id);
+
+
+    if (TM_STRHASH_EQUAL(type_hash, TM_TT_TYPE_HASH__EASING_ITEM) && TM_STRHASH_EQUAL(to_type_hash, TM_TT_TYPE_HASH__UINT32_T)) {
+        uint32_t *v = (uint32_t *)tm_graph_interpreter_api->write_wire(gr, wire, 1, sizeof(uint32_t));
+        *v = tm_the_truth_api->get_uint32_t(tt, data_r, 0);
+        return true;
+    }
+
+    return false;
+}
+
 TM_DLL_EXPORT void tm_load_plugin(struct tm_api_registry_api* reg, bool load)
 {
     tm_the_truth_api = reg->get(TM_THE_TRUTH_API_NAME);
@@ -363,11 +379,13 @@ TM_DLL_EXPORT void tm_load_plugin(struct tm_api_registry_api* reg, bool load)
     tm_entity_api = reg->get(TM_ENTITY_API_NAME);
     tm_graph_interpreter_api = reg->get(TM_GRAPH_INTERPRETER_API_NAME);
     tm_properties_view_api = reg->get(TM_PROPERTIES_VIEW_API_NAME);
+    tm_localizer_api = reg->get(TM_LOCALIZER_API_NAME);
     tm_tween_api = reg->get(TM_TWEEN_API_NAME);
 
     tm_set_or_remove_api(reg, load, TM_TWEEN_API_NAME, &api);
 
     tm_add_or_remove_implementation(reg, load, TM_THE_TRUTH_CREATE_TYPES_INTERFACE_NAME, create_truth_types);
+    tm_add_or_remove_implementation(reg, load, TM_GRAPH_COMPONENT_COMPILE_DATA_INTERFACE_NAME, compile_data_to_wire);
     tm_add_or_remove_implementation(reg, load, TM_ENTITY_SIMULATION_REGISTER_ENGINES_INTERFACE_NAME, register_tween_system);
 
     load_nodes(reg, load);
