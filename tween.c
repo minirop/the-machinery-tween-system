@@ -5,6 +5,7 @@ static struct tm_graph_interpreter_api* tm_graph_interpreter_api;
 static struct tm_properties_view_api* tm_properties_view_api;
 static struct tm_the_truth_api* tm_the_truth_api;
 static struct tm_localizer_api *tm_localizer_api;
+static struct tm_allocator_api *tm_allocator_api;
 
 #include "tween.h"
 
@@ -14,7 +15,8 @@ static struct tm_localizer_api *tm_localizer_api;
 #include <foundation/macros.h>
 #include <foundation/log.h>
 #include <foundation/localizer.h>
-#include <foundation/temp_allocator.h>
+#include <foundation/allocator.h>
+#include <foundation/carray.inl>
 
 #include <plugins/entity/entity.h>
 #include <plugins/editor_views/properties.h>
@@ -27,8 +29,7 @@ static struct tm_localizer_api *tm_localizer_api;
 
 #include "easing.inl"
 
-#define TWEEN_NAME_LENGTH 64
-#define MAX_TWEEN_COUNT 16
+typedef uint64_t tm_string_hash_t;
 
 static easingFunction easingFunctions[] = {
     [TM_TWEEN_EASING_ITEM_LINEAR]       = easeLinear,
@@ -67,26 +68,41 @@ static easingFunction easingFunctions[] = {
 // SYSTEM
 struct tm_tween_item_o
 {
-    char name[TWEEN_NAME_LENGTH];
     float from;
     float to;
     float duration;
     float elapsed;
     easingFunction easing;
 
+    uint32_t id;
+
     bool paused;
 };
 
-struct tm_tween_o
+static uint32_t next_id = 1; // id = 0 means error/no tween
+
+struct tm_tween_manager_o
 {
-    tm_tween_item_o items[MAX_TWEEN_COUNT];
-    bool valid[MAX_TWEEN_COUNT];
+    tm_entity_context_o *ctx;
+    tm_tween_item_o *tweens;
 };
 
-static struct tm_tween_o DEFAULT_TWEEN_ENGINE = {
-    { {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} },
-    { false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false }
-};
+static tm_tween_item_o * find_tween_item(uint32_t id)
+{
+    tm_tween_manager_o * manager = tm_tween_api->manager;
+    uint32_t n_tweens = (uint32_t)tm_carray_size(manager->tweens);
+
+    for (uint32_t i = 0; i < n_tweens; ++i)
+    {
+        tm_tween_item_o * item = &manager->tweens[i];
+        if (item->id == id)
+        {
+            return item;
+        }
+    }
+
+    return NULL;
+}
 
 static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *inst)
 {
@@ -94,61 +110,115 @@ static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *in
     const double editor = tm_entity_api->get_blackboard_double(ctx, TM_ENTITY_BB__EDITOR, 0.0);
     if (editor) return;
 
-    for (int i = 0; i < MAX_TWEEN_COUNT; i++)
+    tm_tween_manager_o *manager = (tm_tween_manager_o *)inst;
+    uint32_t n_tweens = (uint32_t)tm_carray_size(manager->tweens);
+    uint32_t n_finished_tweens = 0;
+    for (uint32_t i = 0; i < n_tweens; ++i)
     {
-        if (DEFAULT_TWEEN_ENGINE.valid[i])
+        tm_tween_item_o * item = &manager->tweens[i];
+
+        if (item->elapsed >= item->duration)
         {
-            DEFAULT_TWEEN_ENGINE.items[i].elapsed += dt;
-            DEFAULT_TWEEN_ENGINE.valid[i] = DEFAULT_TWEEN_ENGINE.items[i].elapsed < DEFAULT_TWEEN_ENGINE.items[i].duration;
+            n_finished_tweens++;
         }
     }
+
+    if (n_finished_tweens)
+    {
+        uint32_t last_position = n_tweens - 1;
+
+        uint32_t i = 0;
+        while (i < last_position)
+        {
+            tm_tween_item_o item = manager->tweens[i];
+
+            if (item.elapsed >= item.duration)
+            {
+                manager->tweens[i] = manager->tweens[last_position];
+                manager->tweens[last_position] = item;
+                --last_position;
+            }
+            else
+            {
+                ++i;
+            }
+        }
+
+        tm_carray_shrink(manager->tweens, i);
+    }
+
+    for (uint32_t i = 0; i < n_tweens; ++i)
+    {
+        tm_tween_item_o * item = &manager->tweens[i];
+        item->elapsed += dt;
+    }
+
+
 }
 
 static void register_tween_system(struct tm_entity_context_o *ctx)
 {
-    for (int i = 0; i < MAX_TWEEN_COUNT; i++)
-    {
-        DEFAULT_TWEEN_ENGINE.valid[i] = false;
-    }
+    tm_tween_api->manager = tm_alloc(tm_allocator_api->system, sizeof(*(tm_tween_api->manager)));
+    *(tm_tween_api->manager) = (tm_tween_manager_o){
+        .ctx = ctx,
+        .tweens = NULL,
+    };
 
     const tm_entity_system_i tween_system = {
-        .ui_name = "tween_system",
-        .hash = TM_STATIC_HASH("tween_system", 0xbbc44fedb0efd920ULL),
+        .ui_name = TM_TWEEN_SYSTEM,
+        .hash = TM_TWEEN_SYSTEM_HASH,
         .update = tween_update,
-        .inst = (tm_entity_system_o *)ctx,
+        .inst = (tm_entity_system_o *)tm_tween_api->manager,
     };
     tm_entity_api->register_system(ctx, &tween_system);
 }
 
+static inline void get_tween_variable(tm_graph_interpreter_context_t *ctx, tm_string_hash_t name, uint32_t *value)
+{
+    tm_graph_interpreter_wire_content_t var_w = tm_graph_interpreter_api->read_variable(ctx->interpreter, name);
+    if (var_w.n)
+        *value = *(uint32_t *)var_w.data;
+}
+
+static inline void set_tween_variable(tm_graph_interpreter_context_t *ctx, tm_string_hash_t name, uint32_t value)
+{
+    uint32_t *var = tm_graph_interpreter_api->write_variable(ctx->interpreter, name, 1, sizeof(*var));
+    *var = value;
+}
+
 // NODES
+//----------------------------------------------------
 enum {
     TWEEN_CREATE__IN_WIRE,
-    TWEEN_CREATE__NAME,
     TWEEN_CREATE__FROM,
     TWEEN_CREATE__TO,
     TWEEN_CREATE__DURATION,
     TWEEN_CREATE__EASING,
     TWEEN_CREATE__OUT_WIRE,
+    TWEEN_CREATE__OUT_TWEEN,
 };
+
+static const tm_graph_generic_value_t tween_from_default_value = { .f = (float[1]){ 0 } };
+static const tm_graph_generic_value_t tween_to_default_value = { .f = (float[1]){ 1 } };
+static const tm_graph_generic_value_t tween_duration_default_value = { .f = (float[1]){ 1 } };
 
 static void tween_create_f(tm_graph_interpreter_context_t *ctx)
 {
-    const tm_graph_interpreter_wire_content_t name_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__NAME]);
     const tm_graph_interpreter_wire_content_t from_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__FROM]);
     const tm_graph_interpreter_wire_content_t to_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__TO]);
     const tm_graph_interpreter_wire_content_t duration_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__DURATION]);
     const tm_graph_interpreter_wire_content_t easing_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__EASING]);
 
-    if (name_w.n == 0)
-        return;
+    const float from = from_w.n > 0 ? *(float *)from_w.data : *tween_from_default_value.f;
+    const float to = to_w.n > 0 ? *(float *)to_w.data : *tween_to_default_value.f;
+    const float duration = duration_w.n > 0 ? *(float *)duration_w.data : *tween_duration_default_value.f;
+    const uint32_t easing = easing_w.n > 0 ? *(uint32_t *)easing_w.data : TM_TWEEN_EASING_ITEM_LINEAR;
 
-    const char *name = (const char *)name_w.data;
-    const float from = from_w.n > 0 ? *(float *)from_w.data : 0;
-    const float to = to_w.n > 0 ? *(float *)to_w.data : 0;
-    const float duration = duration_w.n > 0 ? *(float *)duration_w.data : 1;
-    const uint32_t easing = easing_w.n > 0 ? *(uint32_t *)easing_w.data : 0;
+    tm_tween_item_o *tween = tm_tween_api->create(from, to, duration, easingFunctions[easing]);
+    uint32_t *v = tm_graph_interpreter_api->write_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__OUT_TWEEN], 1, sizeof(uint32_t));
+    *v = tween->id;
 
-    tm_tween_api->create(name, from, to, duration, easingFunctions[easing]);
+    tm_graph_interpreter_api->trigger_wire(ctx->interpreter, ctx->wires[TWEEN_CREATE__OUT_WIRE]);
 }
 
 static tm_graph_component_node_type_i tween_create_node = {
@@ -158,45 +228,38 @@ static tm_graph_component_node_type_i tween_create_node = {
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
-        { "name", TM_TT_TYPE_HASH__STRING },
-        { "from", TM_TT_TYPE_HASH__FLOAT },
-        { "to", TM_TT_TYPE_HASH__FLOAT },
-        { "duration", TM_TT_TYPE_HASH__FLOAT },
+        { "from", TM_TT_TYPE_HASH__FLOAT, .optional = true, .default_value = &tween_from_default_value },
+        { "to", TM_TT_TYPE_HASH__FLOAT, .optional = true, .default_value = &tween_to_default_value },
+        { "duration", TM_TT_TYPE_HASH__FLOAT, .optional = true, .default_value = &tween_duration_default_value },
         { "easing", TM_TT_TYPE_HASH__UINT32_T, TM_TT_TYPE_HASH__EASING_ITEM },
     },
-    .static_connectors.num_in = 6,
+    .static_connectors.num_in = 5,
     .static_connectors.out = {
         { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
     },
-    .static_connectors.num_out = 1,
+    .static_connectors.num_out = 2,
     .run = tween_create_f,
 };
 
 //----------------------------------------------------
 enum {
-    TWEEN_IS_RUNNING__NAME,
+    TWEEN_IS_RUNNING__TWEEN,
     TWEEN_IS_RUNNING__OUT_IS_RUNNING,
 };
 
 static void tween_is_running_f(tm_graph_interpreter_context_t *ctx)
 {
-    const tm_graph_interpreter_wire_content_t name_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_IS_RUNNING__NAME]);
+    const tm_graph_interpreter_wire_content_t tween_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_IS_RUNNING__TWEEN]);
 
-    if (name_w.n == 0)
+    if (tween_w.n == 0)
         return;
 
-    const char *name = (const char *)name_w.data;
+    uint32_t tween_id = *(uint32_t *)tween_w.data;
     bool *is_running = tm_graph_interpreter_api->write_wire(ctx->interpreter, ctx->wires[TWEEN_IS_RUNNING__OUT_IS_RUNNING], 1, sizeof(*is_running));
-    *is_running = false;
 
-    for (int i = 0; i < MAX_TWEEN_COUNT; i++)
-    {
-        if (DEFAULT_TWEEN_ENGINE.valid[i] == true && strncmp(DEFAULT_TWEEN_ENGINE.items[i].name, name, TWEEN_NAME_LENGTH) == 0)
-        {
-            *is_running = true;
-            break;
-        }
-    }
+    tm_tween_item_o * item = find_tween_item(tween_id);
+    *is_running = item != NULL;
 }
 
 static tm_graph_component_node_type_i tween_is_running_node = {
@@ -205,7 +268,7 @@ static tm_graph_component_node_type_i tween_is_running_node = {
     .display_name = "tm_tween_is_running",
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
-        { "name", TM_TT_TYPE_HASH__STRING },
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
     },
     .static_connectors.num_in = 1,
     .static_connectors.out = {
@@ -216,29 +279,32 @@ static tm_graph_component_node_type_i tween_is_running_node = {
 };
 //----------------------------------------------------
 enum {
-    TWEEN_GET_FLOAT__NAME,
+    TWEEN_GET_FLOAT__TWEEN,
     TWEEN_GET_FLOAT__OUT_GET_FLOAT,
 };
 
 static void tween_get_float_f(tm_graph_interpreter_context_t *ctx)
 {
-    const tm_graph_interpreter_wire_content_t name_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_GET_FLOAT__NAME]);
+    const tm_graph_interpreter_wire_content_t tween_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_GET_FLOAT__TWEEN]);
 
-    if (name_w.n == 0)
+    if (tween_w.n == 0)
         return;
 
-    const char *name = (const char *)name_w.data;
+    uint32_t tween_id = *(uint32_t *)tween_w.data;
 
     float *float_value = tm_graph_interpreter_api->write_wire(ctx->interpreter, ctx->wires[TWEEN_GET_FLOAT__OUT_GET_FLOAT], 1, sizeof(*float_value));
     *float_value = 0;
 
-    for (int i = 0; i < MAX_TWEEN_COUNT; i++)
+    tm_tween_item_o * item = find_tween_item(tween_id);
+    if (item)
     {
-        if (DEFAULT_TWEEN_ENGINE.valid[i] == true && strncmp(DEFAULT_TWEEN_ENGINE.items[i].name, name, TWEEN_NAME_LENGTH) == 0)
+        if (item->elapsed < item->duration)
         {
-            tm_tween_item_o * itm = &DEFAULT_TWEEN_ENGINE.items[i];
-            *float_value = itm->from + (itm->to - itm->from) * itm->easing(itm->elapsed / itm->duration);
-            break;
+            *float_value = item->from + (item->to - item->from) * item->easing(item->elapsed / item->duration);
+        }
+        else
+        {
+            *float_value = item->to;
         }
     }
 }
@@ -249,7 +315,7 @@ static tm_graph_component_node_type_i tween_get_float_node = {
     .display_name = "tm_tween_get_float",
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
-        { "name", TM_TT_TYPE_HASH__STRING },
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
     },
     .static_connectors.num_in = 1,
     .static_connectors.out = {
@@ -258,6 +324,81 @@ static tm_graph_component_node_type_i tween_get_float_node = {
     .static_connectors.num_out = 1,
     .run = tween_get_float_f,
 };
+//----------------------------------------------------
+enum {
+    GET_TWEEN_VARIABLE__NAME,
+    GET_TWEEN_VARIABLE__OUT_VALUE,
+};
+
+static void get_tween_variable_node_f(tm_graph_interpreter_context_t *ctx)
+{
+    const tm_graph_interpreter_wire_content_t name_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[GET_TWEEN_VARIABLE__NAME]);
+
+    if (name_w.n == 0)
+        return;
+
+    const tm_string_hash_t name = *(tm_string_hash_t *)name_w.data;
+
+    uint32_t *value = tm_graph_interpreter_api->write_wire(ctx->interpreter, ctx->wires[GET_TWEEN_VARIABLE__OUT_VALUE], 1, sizeof(*value));
+
+    get_tween_variable(ctx, name, value);
+}
+
+static tm_graph_component_node_type_i get_tween_variable_node = {
+    .definition_path = __FILE__,
+    .name = "tm_get_tween_variable",
+    .category = TM_LOCALIZE_LATER("Graph Variables"),
+    .static_connectors.in = {
+        { "name", TM_TT_TYPE_HASH__STRING_HASH, TM_TT_TYPE_HASH__STRING },
+    },
+    .static_connectors.num_in = 1,
+    .static_connectors.out = {
+        { "value", TM_TT_TYPE_HASH__TWEEN_ITEM },
+    },
+    .static_connectors.num_out = 1,
+    .run = get_tween_variable_node_f,
+};
+//----------------------------------------------------
+enum {
+    SET_TWEEN_VARIABLE__IN_EVENT,
+    SET_TWEEN_VARIABLE__NAME,
+    SET_TWEEN_VARIABLE__VALUE,
+    SET_TWEEN_VARIABLE__OUT_EVENT,
+};
+
+static void set_tween_variable_node_f(tm_graph_interpreter_context_t *ctx)
+{
+    const tm_graph_interpreter_wire_content_t name_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[SET_TWEEN_VARIABLE__NAME]);
+    const tm_graph_interpreter_wire_content_t value_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[SET_TWEEN_VARIABLE__VALUE]);
+
+    if (name_w.n == 0)
+        return;
+
+    const tm_string_hash_t name = *(tm_string_hash_t *)name_w.data;
+    uint32_t value = *(uint32_t *)value_w.data;
+
+    set_tween_variable(ctx, name, value);
+
+    tm_graph_interpreter_api->trigger_wire(ctx->interpreter, ctx->wires[SET_TWEEN_VARIABLE__OUT_EVENT]);
+}
+
+static tm_graph_component_node_type_i set_tween_variable_node = {
+    .definition_path = __FILE__,
+    .name = "tm_set_tween_variable",
+    .category = TM_LOCALIZE_LATER("Graph Variables"),
+    .static_connectors.in = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+        { "name", TM_TT_TYPE_HASH__STRING_HASH, TM_TT_TYPE_HASH__STRING },
+        { "value", TM_TT_TYPE_HASH__TWEEN_ITEM },
+    },
+    .static_connectors.num_in = 3,
+    .static_connectors.out = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+    },
+    .static_connectors.num_out = 1,
+    .run = set_tween_variable_node_f,
+};
+//----------------------------------------------------
 
 static void load_nodes(struct tm_api_registry_api* reg, bool load)
 {
@@ -265,6 +406,8 @@ static void load_nodes(struct tm_api_registry_api* reg, bool load)
         &tween_create_node,
         &tween_get_float_node,
         &tween_is_running_node,
+        &get_tween_variable_node,
+        &set_tween_variable_node,
     };
     for (int i = 0; i != TM_ARRAY_COUNT(nodes); ++i)
     {
@@ -272,33 +415,23 @@ static void load_nodes(struct tm_api_registry_api* reg, bool load)
     }
 }
 
-static tm_tween_item_o* create(const char* name, float from, float to, float duration, easingFunction easing)
+static tm_tween_item_o* create(float from, float to, float duration, easingFunction easing)
 {
-    for (int i = 0; i < MAX_TWEEN_COUNT; i++)
-    {
-        if (DEFAULT_TWEEN_ENGINE.valid[i] == false)
-        {
-            strncpy(DEFAULT_TWEEN_ENGINE.items[i].name, name, TWEEN_NAME_LENGTH);
-            DEFAULT_TWEEN_ENGINE.items[i].from = from;
-            DEFAULT_TWEEN_ENGINE.items[i].to = to;
-            DEFAULT_TWEEN_ENGINE.items[i].duration = duration;
-            DEFAULT_TWEEN_ENGINE.items[i].elapsed = 0;
-            DEFAULT_TWEEN_ENGINE.items[i].easing = easing;
-            DEFAULT_TWEEN_ENGINE.valid[i] = true;
-
-            return &DEFAULT_TWEEN_ENGINE.items[i];
-        }
-    }
-
-    tm_logger_api->printf(TM_LOG_TYPE_ERROR, "Only %d tweens can be active at the same time\n", MAX_TWEEN_COUNT);
-
-    return NULL;
+    struct tm_tween_item_o item = {
+        .from = from,
+        .to = to,
+        .duration = duration,
+        .easing = easing,
+        .id = next_id++,
+        .paused = false,
+    };
+    tm_carray_push(tm_tween_api->manager->tweens, item, tm_allocator_api->system);
+    return tm_carray_last(tm_tween_api->manager->tweens);
 }
 
 static void destroy(tm_tween_item_o* item)
 {
-    // nothing
-    tm_logger_api->printf(TM_LOG_TYPE_ERROR, "destroying tween system\n");
+    // TODO?
 }
 
 static struct tm_tween_api api = {
@@ -380,6 +513,7 @@ TM_DLL_EXPORT void tm_load_plugin(struct tm_api_registry_api* reg, bool load)
     tm_graph_interpreter_api = reg->get(TM_GRAPH_INTERPRETER_API_NAME);
     tm_properties_view_api = reg->get(TM_PROPERTIES_VIEW_API_NAME);
     tm_localizer_api = reg->get(TM_LOCALIZER_API_NAME);
+    tm_allocator_api = reg->get(TM_ALLOCATOR_API_NAME);
     tm_tween_api = reg->get(TM_TWEEN_API_NAME);
 
     tm_set_or_remove_api(reg, load, TM_TWEEN_API_NAME, &api);

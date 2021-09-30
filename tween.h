@@ -1,20 +1,28 @@
 #pragma once
 
-typedef struct tm_tween_o tm_tween_o;
+typedef struct tm_tween_manager_o tm_tween_manager_o;
 typedef struct tm_tween_item_o tm_tween_item_o;
 
 typedef double (*easingFunction)(double);
 
 struct tm_tween_api
 {
-	tm_tween_item_o* (*create)(const char* name, float from, float to, float duration, easingFunction easing);
+	tm_tween_item_o* (*create)(float from, float to, float duration, easingFunction easing);
 	void (*destroy)(tm_tween_item_o* item);
+
+    tm_tween_manager_o * manager;
 };
 
 #define TM_TWEEN_API_NAME "tm_tween_api"
 
+#define TM_TT_TYPE__TWEEN_ITEM "tm_tween_item"
+#define TM_TT_TYPE_HASH__TWEEN_ITEM TM_STATIC_HASH("tm_tween_item", 0x13a429408501296aULL)
+
 #define TM_TT_TYPE__EASING_ITEM "tm_easing_item"
 #define TM_TT_TYPE_HASH__EASING_ITEM TM_STATIC_HASH("tm_easing_item", 0xea6caf6c94635110ULL)
+
+#define TM_TWEEN_SYSTEM "tm_tween_system"
+#define TM_TWEEN_SYSTEM_HASH TM_STATIC_HASH("tm_tween_system", 0xf3dd3e4ba4a2a5d5ULL)
 
 enum tm_tween_easing_item {
     TM_TWEEN_EASING_ITEM_LINEAR,
