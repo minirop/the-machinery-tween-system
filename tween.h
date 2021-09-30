@@ -13,7 +13,7 @@ struct tm_tween_api
     tm_tween_manager_o * manager;
 };
 
-#define TM_TWEEN_API_NAME "tm_tween_api"
+#define tm_tween_api_version TM_VERSION(1, 0, 0)
 
 #define TM_TT_TYPE__TWEEN_ITEM "tm_tween_item"
 #define TM_TT_TYPE_HASH__TWEEN_ITEM TM_STATIC_HASH("tm_tween_item", 0x13a429408501296aULL)

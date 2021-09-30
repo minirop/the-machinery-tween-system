@@ -104,7 +104,12 @@ static tm_tween_item_o * find_tween_item(uint32_t id)
     return NULL;
 }
 
-static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *inst)
+static void tween_init(struct tm_entity_context_o *ctx, tm_entity_system_o *inst, struct tm_entity_commands_o *commands)
+{
+
+}
+
+static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *inst, struct tm_entity_commands_o *commands)
 {
     const double dt = tm_entity_api->get_blackboard_double(ctx, TM_ENTITY_BB__DELTA_TIME, 1.0 / 60.0);
     const double editor = tm_entity_api->get_blackboard_double(ctx, TM_ENTITY_BB__EDITOR, 0.0);
@@ -156,6 +161,11 @@ static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *in
 
 }
 
+static void tween_shutdown(struct tm_entity_context_o *ctx, tm_entity_system_o *inst, struct tm_entity_commands_o *commands)
+{
+
+}
+
 static void register_tween_system(struct tm_entity_context_o *ctx)
 {
     tm_tween_api->manager = tm_alloc(tm_allocator_api->system, sizeof(*(tm_tween_api->manager)));
@@ -167,7 +177,9 @@ static void register_tween_system(struct tm_entity_context_o *ctx)
     const tm_entity_system_i tween_system = {
         .ui_name = TM_TWEEN_SYSTEM,
         .hash = TM_TWEEN_SYSTEM_HASH,
+        .init = tween_init,
         .update = tween_update,
+        .shutdown = tween_shutdown,
         .inst = (tm_entity_system_o *)tm_tween_api->manager,
     };
     tm_entity_api->register_system(ctx, &tween_system);
@@ -411,7 +423,7 @@ static void load_nodes(struct tm_api_registry_api* reg, bool load)
     };
     for (int i = 0; i != TM_ARRAY_COUNT(nodes); ++i)
     {
-        tm_add_or_remove_implementation(reg, load, TM_GRAPH_COMPONENT_NODE_INTERFACE_NAME, nodes[i]);
+        tm_add_or_remove_implementation(reg, load, tm_graph_component_node_type_i, nodes[i]);
     }
 }
 
@@ -507,20 +519,20 @@ static bool compile_data_to_wire(tm_graph_interpreter_o *gr, uint32_t wire, cons
 
 TM_DLL_EXPORT void tm_load_plugin(struct tm_api_registry_api* reg, bool load)
 {
-    tm_the_truth_api = reg->get(TM_THE_TRUTH_API_NAME);
-    tm_logger_api = reg->get(TM_LOGGER_API_NAME);
-    tm_entity_api = reg->get(TM_ENTITY_API_NAME);
-    tm_graph_interpreter_api = reg->get(TM_GRAPH_INTERPRETER_API_NAME);
-    tm_properties_view_api = reg->get(TM_PROPERTIES_VIEW_API_NAME);
-    tm_localizer_api = reg->get(TM_LOCALIZER_API_NAME);
-    tm_allocator_api = reg->get(TM_ALLOCATOR_API_NAME);
-    tm_tween_api = reg->get(TM_TWEEN_API_NAME);
+    tm_the_truth_api = tm_get_api(reg, tm_the_truth_api);
+    tm_logger_api = tm_get_api(reg, tm_logger_api);
+    tm_entity_api = tm_get_api(reg, tm_entity_api);
+    tm_graph_interpreter_api = tm_get_api(reg, tm_graph_interpreter_api);
+    tm_properties_view_api = tm_get_api(reg, tm_properties_view_api);
+    tm_localizer_api = tm_get_api(reg, tm_localizer_api);
+    tm_allocator_api = tm_get_api(reg, tm_allocator_api);
+    tm_tween_api = tm_get_api(reg, tm_tween_api);
 
-    tm_set_or_remove_api(reg, load, TM_TWEEN_API_NAME, &api);
+    tm_set_or_remove_api(reg, load, tm_tween_api, &api);
 
-    tm_add_or_remove_implementation(reg, load, TM_THE_TRUTH_CREATE_TYPES_INTERFACE_NAME, create_truth_types);
-    tm_add_or_remove_implementation(reg, load, TM_GRAPH_COMPONENT_COMPILE_DATA_INTERFACE_NAME, compile_data_to_wire);
-    tm_add_or_remove_implementation(reg, load, TM_ENTITY_SIMULATION_REGISTER_ENGINES_INTERFACE_NAME, register_tween_system);
+    tm_add_or_remove_implementation(reg, load, tm_the_truth_create_types_i, create_truth_types);
+    tm_add_or_remove_implementation(reg, load, tm_graph_component_compile_data_i, compile_data_to_wire);
+    tm_add_or_remove_implementation(reg, load, tm_entity_register_engines_simulation_i, register_tween_system);
 
     load_nodes(reg, load);
 }
