@@ -155,7 +155,11 @@ static void tween_update(struct tm_entity_context_o *ctx, tm_entity_system_o *in
     for (uint32_t i = 0; i < n_tweens; ++i)
     {
         tm_tween_item_o * item = &manager->tweens[i];
-        item->elapsed += dt;
+
+        if (!item->paused)
+        {
+            item->elapsed += dt;
+        }
     }
 
 
@@ -236,7 +240,6 @@ static void tween_create_f(tm_graph_interpreter_context_t *ctx)
 static tm_graph_component_node_type_i tween_create_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_create",
-    .display_name = "tm_tween_create",
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
@@ -254,6 +257,44 @@ static tm_graph_component_node_type_i tween_create_node = {
     .run = tween_create_f,
 };
 
+//----------------------------------------------------
+enum {
+    TWEEN_DESTROY__IN_WIRE,
+    TWEEN_DESTROY__TWEEN,
+    TWEEN_DESTROY__OUT_WIRE,
+};
+
+static void tween_destroy_f(tm_graph_interpreter_context_t *ctx)
+{
+    const tm_graph_interpreter_wire_content_t tween_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_DESTROY__TWEEN]);
+
+    if (tween_w.n == 0)
+        return;
+
+    uint32_t tween_id = *(uint32_t *)tween_w.data;
+
+    tm_tween_item_o * item = find_tween_item(tween_id);
+    if (item)
+        tm_tween_api->destroy(item);
+
+    tm_graph_interpreter_api->trigger_wire(ctx->interpreter, ctx->wires[TWEEN_DESTROY__OUT_WIRE]);
+}
+
+static tm_graph_component_node_type_i tween_destroy_node = {
+    .definition_path = __FILE__,
+    .name = "tm_tween_destroy",
+    .category = TM_LOCALIZE_LATER("Tween"),
+    .static_connectors.in = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
+    },
+    .static_connectors.num_in = 2,
+    .static_connectors.out = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+    },
+    .static_connectors.num_out = 1,
+    .run = tween_destroy_f,
+};
 //----------------------------------------------------
 enum {
     TWEEN_IS_RUNNING__TWEEN,
@@ -277,7 +318,6 @@ static void tween_is_running_f(tm_graph_interpreter_context_t *ctx)
 static tm_graph_component_node_type_i tween_is_running_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_is_running",
-    .display_name = "tm_tween_is_running",
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
@@ -288,6 +328,93 @@ static tm_graph_component_node_type_i tween_is_running_node = {
     },
     .static_connectors.num_out = 1,
     .run = tween_is_running_f,
+};
+//----------------------------------------------------
+enum {
+    TWEEN_IS_PAUSED__TWEEN,
+    TWEEN_IS_PAUSED__OUT_IS_PAUSED,
+};
+
+static void tween_is_paused_f(tm_graph_interpreter_context_t *ctx)
+{
+    const tm_graph_interpreter_wire_content_t tween_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[TWEEN_IS_PAUSED__TWEEN]);
+
+    if (tween_w.n == 0)
+        return;
+
+    uint32_t tween_id = *(uint32_t *)tween_w.data;
+    bool *is_paused = tm_graph_interpreter_api->write_wire(ctx->interpreter, ctx->wires[TWEEN_IS_PAUSED__OUT_IS_PAUSED], 1, sizeof(*is_paused));
+
+    tm_tween_item_o * item = find_tween_item(tween_id);
+    if (item)
+    {
+        *is_paused = item->paused;
+    }
+    else
+    {
+        *is_paused = false;
+    }
+}
+
+static tm_graph_component_node_type_i tween_is_paused_node = {
+    .definition_path = __FILE__,
+    .name = "tm_tween_is_paused",
+    .category = TM_LOCALIZE_LATER("Tween"),
+    .static_connectors.in = {
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
+    },
+    .static_connectors.num_in = 1,
+    .static_connectors.out = {
+        { "is paused", TM_TT_TYPE_HASH__BOOL },
+    },
+    .static_connectors.num_out = 1,
+    .run = tween_is_paused_f,
+};
+//----------------------------------------------------
+enum {
+    PAUSE_TWEEN__IN_EVENT,
+    PAUSE_TWEEN__TWEEN,
+    PAUSE_TWEEN__PAUSE,
+    PAUSE_TWEEN__OUT_EVENT,
+};
+
+static const tm_graph_generic_value_t tween_pause_default_value = { .boolean = (bool[1]){ false } };
+
+static void tween_pause_f(tm_graph_interpreter_context_t *ctx)
+{
+    const tm_graph_interpreter_wire_content_t tween_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[PAUSE_TWEEN__TWEEN]);
+    const tm_graph_interpreter_wire_content_t pause_w = tm_graph_interpreter_api->read_wire(ctx->interpreter, ctx->wires[PAUSE_TWEEN__PAUSE]);
+
+    if (tween_w.n == 0)
+        return;
+
+    uint32_t tween_id = *(uint32_t *)tween_w.data;
+    const bool pause = pause_w.n > 0 ? *(bool *)pause_w.data : *tween_pause_default_value.boolean;
+
+    tm_tween_item_o * item = find_tween_item(tween_id);
+    if (item)
+    {
+        item->paused = pause;
+    }
+
+    tm_graph_interpreter_api->trigger_wire(ctx->interpreter, ctx->wires[PAUSE_TWEEN__OUT_EVENT]);
+}
+
+static tm_graph_component_node_type_i pause_tween_node = {
+    .definition_path = __FILE__,
+    .name = "tm_pause_tween",
+    .category = TM_LOCALIZE_LATER("Tween"),
+    .static_connectors.in = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+        { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
+        { "pause", TM_TT_TYPE_HASH__BOOL },
+    },
+    .static_connectors.num_in = 3,
+    .static_connectors.out = {
+        { "", TM_TT_TYPE_HASH__GRAPH_EVENT },
+    },
+    .static_connectors.num_out = 1,
+    .run = tween_pause_f,
 };
 //----------------------------------------------------
 enum {
@@ -324,7 +451,6 @@ static void tween_get_float_f(tm_graph_interpreter_context_t *ctx)
 static tm_graph_component_node_type_i tween_get_float_node = {
     .definition_path = __FILE__,
     .name = "tm_tween_get_float",
-    .display_name = "tm_tween_get_float",
     .category = TM_LOCALIZE_LATER("Tween"),
     .static_connectors.in = {
         { "tween", TM_TT_TYPE_HASH__TWEEN_ITEM },
@@ -418,6 +544,9 @@ static void load_nodes(struct tm_api_registry_api* reg, bool load)
         &tween_create_node,
         &tween_get_float_node,
         &tween_is_running_node,
+        &tween_is_paused_node,
+        &pause_tween_node,
+        &tween_destroy_node,
         &get_tween_variable_node,
         &set_tween_variable_node,
     };
@@ -443,7 +572,24 @@ static tm_tween_item_o* create(float from, float to, float duration, easingFunct
 
 static void destroy(tm_tween_item_o* item)
 {
-    // TODO?
+    tm_tween_manager_o *manager = tm_tween_api->manager;
+    uint32_t n_tweens = (uint32_t)tm_carray_size(manager->tweens);
+
+    for (uint32_t i = 0; i < n_tweens; ++i)
+    {
+        if (manager->tweens[i].id == item->id)
+        {
+            if (i != n_tweens - 1)
+            {
+                tm_tween_item_o destroyed = manager->tweens[i];
+                manager->tweens[i] = manager->tweens[n_tweens - 1];
+                manager->tweens[n_tweens - 1] = destroyed;
+            }
+
+            tm_carray_shrink(manager->tweens, n_tweens - 1);
+            break;
+        }
+    }
 }
 
 static struct tm_tween_api api = {
@@ -506,7 +652,6 @@ static bool compile_data_to_wire(tm_graph_interpreter_o *gr, uint32_t wire, cons
     const tm_tt_type_t type = tm_tt_type(data_id);
     const tm_strhash_t type_hash = tm_the_truth_api->type_name_hash(tt, type);
     const tm_the_truth_object_o *data_r = tm_tt_read(tt, data_id);
-
 
     if (TM_STRHASH_EQUAL(type_hash, TM_TT_TYPE_HASH__EASING_ITEM) && TM_STRHASH_EQUAL(to_type_hash, TM_TT_TYPE_HASH__UINT32_T)) {
         uint32_t *v = (uint32_t *)tm_graph_interpreter_api->write_wire(gr, wire, 1, sizeof(uint32_t));
