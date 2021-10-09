@@ -9,8 +9,6 @@ struct tm_tween_api
 {
 	tm_tween_item_o* (*create)(float from, float to, float duration, easingFunction easing);
 	void (*destroy)(tm_tween_item_o* item);
-
-    tm_tween_manager_o * manager;
 };
 
 #define tm_tween_api_version TM_VERSION(1, 0, 0)

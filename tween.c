@@ -172,8 +172,11 @@ static void tween_shutdown(struct tm_entity_context_o *ctx, tm_entity_system_o *
 
 static void register_tween_system(struct tm_entity_context_o *ctx)
 {
-    tm_tween_api->manager = tm_alloc(tm_allocator_api->system, sizeof(*(tm_tween_api->manager)));
-    *(tm_tween_api->manager) = (tm_tween_manager_o){
+    tm_allocator_i a;
+    tm_entity_api->create_child_allocator(ctx, TM_TT_TYPE__GRAPH_COMPONENT, &a);
+
+    tm_tween_manager_o * manager = tm_alloc(&a, sizeof(*manager));
+    *(manager) = (tm_tween_manager_o){
         .ctx = ctx,
         .tweens = NULL,
     };
@@ -184,7 +187,7 @@ static void register_tween_system(struct tm_entity_context_o *ctx)
         .init = tween_init,
         .update = tween_update,
         .shutdown = tween_shutdown,
-        .inst = (tm_entity_system_o *)tm_tween_api->manager,
+        .inst = (tm_entity_system_o *)manager,
     };
     tm_entity_api->register_system(ctx, &tween_system);
 }
